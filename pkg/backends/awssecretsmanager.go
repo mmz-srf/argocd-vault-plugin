@@ -43,7 +43,7 @@ func (a *AWSSecretsManager) GetSecrets(path string, _ map[string]string) (map[st
 		if json.Valid([]byte(*result.SecretString)) {
 			err := json.Unmarshal([]byte(*result.SecretString), &dat)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("Could not parse secret %s \nError: %s", path, err)
 			}
 		} else {
 			dat = map[string]interface{}{
