@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IBM/argocd-vault-plugin/pkg/helpers"
+	"github.com/argoproj-labs/argocd-vault-plugin/pkg/helpers"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/vault"
 )
@@ -32,6 +32,7 @@ func TestMain(t *testing.T) {
 		c := bytes.NewBufferString("")
 		cmd.SetArgs(args)
 		cmd.SetErr(c)
+		cmd.SetOut(bytes.NewBufferString(""))
 		cmd.Execute()
 		out, err := ioutil.ReadAll(c) // Read buffer to bytes
 		if err != nil {
@@ -51,13 +52,59 @@ func TestMain(t *testing.T) {
 		b := bytes.NewBufferString("")
 		cmd.SetArgs(args)
 		cmd.SetErr(b)
+		cmd.SetOut(bytes.NewBufferString(""))
 		cmd.Execute()
 		out, err := ioutil.ReadAll(b) // Read buffer to bytes
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		expected := "no YAML files were found in ./fixtures/input/empty/"
+		expected := "no YAML or JSON files were found in ./fixtures/input/empty/"
+		if !strings.Contains(string(out), expected) {
+			t.Fatalf("expected to contain: %s but got %s", expected, out)
+		}
+	})
+
+	t.Run("returns error for empty manifests", func(t *testing.T) {
+		// From path
+		args := []string{"../fixtures/input/empty/file.yaml"}
+		cmd := NewGenerateCommand()
+
+		b := bytes.NewBufferString("")
+		cmd.SetArgs(args)
+		cmd.SetErr(b)
+		cmd.SetOut(bytes.NewBufferString(""))
+		cmd.Execute()
+		out, err := ioutil.ReadAll(b) // Read buffer to bytes
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		expected := ""
+		if !strings.Contains(string(out), expected) {
+			t.Fatalf("expected to contain: %s but got %s", expected, out)
+		}
+
+		// From stdin
+		args = []string{"-"}
+		stdin := bytes.NewBufferString("")
+		inputBuf, err := ioutil.ReadFile("../fixtures/input/empty/file.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdin.Write(inputBuf)
+
+		b = bytes.NewBufferString("")
+		cmd.SetIn(stdin)
+		cmd.SetArgs(args)
+		cmd.SetErr(b)
+		cmd.SetOut(bytes.NewBufferString(""))
+		cmd.Execute()
+		out, err = ioutil.ReadAll(b) // Read buffer to bytes
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		if !strings.Contains(string(out), expected) {
 			t.Fatalf("expected to contain: %s but got %s", expected, out)
 		}
@@ -68,10 +115,16 @@ func TestMain(t *testing.T) {
 		cmd := NewGenerateCommand()
 
 		b := bytes.NewBufferString("")
+		e := bytes.NewBufferString("")
 		cmd.SetArgs(args)
 		cmd.SetOut(b)
+		cmd.SetErr(e)
 		cmd.Execute()
 		out, err := ioutil.ReadAll(b) // Read buffer to bytes
+		if err != nil {
+			t.Fatal(err)
+		}
+		stderr, err := ioutil.ReadAll(e) // Read buffer to bytes
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,7 +136,7 @@ func TestMain(t *testing.T) {
 
 		expected := string(buf)
 		if string(out) != expected {
-			t.Fatalf("expected %s but got %s", expected, string(out))
+			t.Fatalf("expected %s\n\nbut got\n\n%s\nerr: %s", expected, string(out), string(stderr))
 		}
 	})
 
@@ -157,6 +210,7 @@ func TestMain(t *testing.T) {
 		stderr := bytes.NewBufferString("")
 		cmd.SetArgs(args)
 		cmd.SetErr(stderr)
+		cmd.SetOut(bytes.NewBufferString(""))
 		cmd.SetIn(stdin)
 		cmd.Execute()
 		out, err := ioutil.ReadAll(stderr) // Read buffer to bytes
@@ -170,10 +224,37 @@ func TestMain(t *testing.T) {
 		}
 	})
 
+	t.Run("will return that path validation env is not valid", func(t *testing.T) {
+		args := []string{"../fixtures/input/nonempty"}
+		cmd := NewGenerateCommand()
+
+		// set specific env and register cleanup func
+		os.Setenv("AVP_PATH_VALIDATION", `^\/(?!\/)(.*?)`)
+		t.Cleanup(func() {
+			os.Unsetenv("AVP_PATH_VALIDATION")
+		})
+
+		b := bytes.NewBufferString("")
+		cmd.SetArgs(args)
+		cmd.SetErr(b)
+		cmd.SetOut(bytes.NewBufferString(""))
+		cmd.Execute()
+		out, err := ioutil.ReadAll(b) // Read buffer to bytes
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		expected := "^\\/(?!\\/)(.*?) is not a valid regular expression: error parsing regexp: invalid or unsupported Perl syntax: `(?!`"
+		if !strings.Contains(string(out), expected) {
+			t.Fatalf("expected to contain: %s but got %s", expected, out)
+		}
+	})
+
 	os.Unsetenv("AVP_TYPE")
 	os.Unsetenv("VAULT_ADDR")
 	os.Unsetenv("AVP_AUTH_TYPE")
 	os.Unsetenv("AVP_SECRET_ID")
 	os.Unsetenv("AVP_ROLE_ID")
 	os.Unsetenv("VAULT_SKIP_VERIFY")
+	os.Unsetenv("AVP_PATH_VALIDATION")
 }

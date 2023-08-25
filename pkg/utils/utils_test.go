@@ -1,16 +1,19 @@
 package utils_test
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
-	"github.com/IBM/argocd-vault-plugin/pkg/helpers"
-	"github.com/IBM/argocd-vault-plugin/pkg/utils"
+	"github.com/argoproj-labs/argocd-vault-plugin/pkg/helpers"
+	"github.com/argoproj-labs/argocd-vault-plugin/pkg/utils"
 )
 
 func writeToken(token string) error {
@@ -103,5 +106,23 @@ func TestSetToken(t *testing.T) {
 	err := removeToken()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDefaultHTTPClient(t *testing.T) {
+	expectedClient := &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			TLSHandshakeTimeout: 10 * time.Second,
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			},
+		},
+	}
+
+	client := utils.DefaultHttpClient()
+
+	if !reflect.DeepEqual(client, expectedClient) {
+		t.Errorf("expected: %v, got: %v.", expectedClient, client)
 	}
 }

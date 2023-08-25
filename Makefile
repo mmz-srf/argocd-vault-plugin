@@ -1,12 +1,10 @@
 BINARY=argocd-vault-plugin
-VERSION=1.1.1
-OS_ARCH=darwin_amd64
 
 default: build
 
 quality:
-	go vet github.com/IBM/argocd-vault-plugin/...
-	go test -v -coverprofile cover.out ./...
+	go vet github.com/argoproj-labs/argocd-vault-plugin
+	go test -race -v -coverprofile cover.out ./...
 
 build:
 	go build -o ${BINARY} .

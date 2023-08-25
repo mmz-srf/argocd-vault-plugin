@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"testing"
 
-	"github.com/IBM/argocd-vault-plugin/pkg/helpers"
-	"github.com/IBM/argocd-vault-plugin/pkg/types"
+	"github.com/argoproj-labs/argocd-vault-plugin/pkg/helpers"
+	"github.com/argoproj-labs/argocd-vault-plugin/pkg/types"
 )
 
 func assertSuccessfulReplacement(actual, expected *Resource, t *testing.T) {
@@ -38,6 +39,7 @@ func assertFailedReplacement(actual, expected *Resource, t *testing.T) {
 		t.Fatalf("expected Vault map to look like %s\n but got: %s", expected.Data, actual.Data)
 	}
 }
+
 func TestGenericReplacement_simpleString(t *testing.T) {
 	dummyResource := Resource{
 		TemplateData: map[string]interface{}{
@@ -91,7 +93,7 @@ func TestGenericReplacement_specificPath(t *testing.T) {
 
 	replaceInner(&dummyResource, &dummyResource.TemplateData, genericReplacement)
 
-	if !mv.GetSecretsCalled {
+	if !mv.GetIndividualSecretCalled {
 		t.Fatalf("expected GetSecrets to be called since placeholder contains explicit path so Vault lookup is neeed")
 	}
 
@@ -109,6 +111,137 @@ func TestGenericReplacement_specificPath(t *testing.T) {
 
 	assertSuccessfulReplacement(&dummyResource, &expected, t)
 }
+
+func TestGenericReplacement_specificPathWithValidation(t *testing.T) {
+	// Test that the specific-path placeholder syntax is used to find/replace placeholders
+	// along with the generic syntax, since the generic Vault path is defined
+	mv := helpers.MockVault{}
+	mv.LoadData(map[string]interface{}{
+		"namespace": "default",
+	})
+
+	t.Run("valid path", func(t *testing.T) {
+		dummyResource := Resource{
+			TemplateData: map[string]interface{}{
+				"namespace": "<path:blah/blah#namespace>",
+				"name":      "<name>",
+			},
+			Data: map[string]interface{}{
+				"namespace": "something-else",
+				"name":      "foo",
+			},
+			Backend: &mv,
+			Annotations: map[string]string{
+				(types.AVPPathAnnotation): "",
+			},
+			PathValidation: regexp.MustCompile(`^([A-Za-z/]*)$`),
+		}
+
+		replaceInner(&dummyResource, &dummyResource.TemplateData, genericReplacement)
+
+		if !mv.GetIndividualSecretCalled {
+			t.Fatalf("expected GetSecrets to be called since placeholder contains explicit path so Vault lookup is neeed")
+		}
+
+		expected := Resource{
+			TemplateData: map[string]interface{}{
+				"namespace": "default",
+				"name":      "foo",
+			},
+			Data: map[string]interface{}{
+				"namespace": "something-else",
+				"name":      "foo",
+			},
+			replacementErrors: []error{},
+		}
+
+		assertSuccessfulReplacement(&dummyResource, &expected, t)
+	})
+
+	t.Run("invalid path", func(t *testing.T) {
+		dummyResource := Resource{
+			TemplateData: map[string]interface{}{
+				"namespace": "<path:../blah/blah#namespace>",
+			},
+			Data: map[string]interface{}{
+				"namespace": "something-else",
+			},
+			Backend: &mv,
+			Annotations: map[string]string{
+				(types.AVPPathAnnotation): "",
+			},
+			PathValidation: regexp.MustCompile(`^([A-Za-z/]*)$`),
+		}
+
+		replaceInner(&dummyResource, &dummyResource.TemplateData, genericReplacement)
+
+		if !mv.GetIndividualSecretCalled {
+			t.Fatalf("expected GetSecrets to be called since placeholder contains explicit path so Vault lookup is neeed")
+		}
+
+		expected := Resource{
+			TemplateData: map[string]interface{}{
+				"namespace": "<path:../blah/blah#namespace>",
+			},
+			Data: map[string]interface{}{
+				"namespace": "something-else",
+			},
+			replacementErrors: []error{
+				fmt.Errorf("the path ../blah/blah is disallowed by AVP_PATH_VALIDATION restriction"),
+			},
+		}
+
+		assertFailedReplacement(&dummyResource, &expected, t)
+	})
+}
+
+func TestGenericReplacement_specificPathVersioned(t *testing.T) {
+	// Test that the specific-path placeholder syntax with versioning is used to find/replace placeholders
+	mv := helpers.MockVault{}
+	mv.LoadData(map[string]interface{}{
+		"version": "one",
+	})
+	mv.LoadData(map[string]interface{}{
+		"version": "two",
+	})
+	mv.LoadData(map[string]interface{}{
+		"version": "three",
+	})
+
+	dummyResource := Resource{
+		TemplateData: map[string]interface{}{
+			"first":  "<path:blah/blah#version#1>",
+			"second": "<path:blah/blah#version#2>",
+			"third":  "<path:blah/blah#version#3>",
+			"latest": "<path:blah/blah#version>",
+		},
+		Data:    map[string]interface{}{},
+		Backend: &mv,
+		Annotations: map[string]string{
+			(types.AVPPathAnnotation): "",
+		},
+	}
+
+	replaceInner(&dummyResource, &dummyResource.TemplateData, genericReplacement)
+
+	if !mv.GetIndividualSecretCalled {
+		t.Fatalf("expected GetSecrets to be called since placeholder contains explicit path so Vault lookup is neeed")
+	}
+
+	expected := Resource{
+		TemplateData: map[string]interface{}{
+			"first":  "one",
+			"second": "two",
+			"third":  "three",
+			"latest": "three",
+		},
+		Data:              map[string]interface{}{},
+		replacementErrors: []error{},
+	}
+
+	assertSuccessfulReplacement(&dummyResource, &expected, t)
+}
+
 func TestGenericReplacement_specificPathNoAnnotation(t *testing.T) {
 	mv := helpers.MockVault{}
 	mv.LoadData(map[string]interface{}{
@@ -131,7 +264,7 @@ func TestGenericReplacement_specificPathNoAnnotation(t *testing.T) {
 
 	replaceInner(&dummyResource, &dummyResource.TemplateData, genericReplacement)
 
-	if !mv.GetSecretsCalled {
+	if !mv.GetIndividualSecretCalled {
 		t.Fatalf("expected GetSecrets to be called since placeholder contains explicit path, was not")
 	}
 
@@ -215,6 +348,119 @@ func TestGenericReplacement_Base64(t *testing.T) {
 	}
 
 	assertSuccessfulReplacement(&dummyResource, &expected, t)
+}
+
+func TestGenericReplacement_JsonPath(t *testing.T) {
+	dummyResource := Resource{
+		TemplateData: map[string]interface{}{
+			"username": "<data | jsonPath {.credentials.user}>",
+			"password": "<data | jsonPath {.credentials.pass} | base64encode>",
+			"image":    "<data | jsonPath {.image} | jsonParse>",
+		},
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{
+				"credentials": map[string]interface{}{
+					"user": "app",
+					"pass": "mypw",
+				},
+				"image": map[string]interface{}{
+					"repository": "docker.io/dummy",
+					"tag":        "latest",
+				},
+			},
+		},
+		Annotations: map[string]string{
+			(types.AVPPathAnnotation): "",
+		},
+	}
+
+	replaceInner(&dummyResource, &dummyResource.TemplateData, genericReplacement)
+
+	expected := Resource{
+		TemplateData: map[string]interface{}{
+			"username": "app",
+			"password": "bXlwdw==",
+			"image": map[string]interface{}{
+				"repository": "docker.io/dummy",
+				"tag":        "latest",
+			},
+		},
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{
+				"credentials": map[string]interface{}{
+					"user": "app",
+					"pass": "mypw",
+				},
+				"image": map[string]interface{}{
+					"repository": "docker.io/dummy",
+					"tag":        "latest",
+				},
+			},
+		},
+		replacementErrors: []error{},
+	}
+
+	assertSuccessfulReplacement(&dummyResource, &expected, t)
+}
+
+func TestGenericReplacement_Modifier_Error(t *testing.T) {
+	dummyResource := Resource{
+		TemplateData: map[string]interface{}{
+			"image": "<data | jsonPath {.missingPath}>",
+		},
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{},
+		},
+		Annotations: map[string]string{
+			(types.AVPPathAnnotation): "",
+		},
+	}
+
+	replaceInner(&dummyResource, &dummyResource.TemplateData, genericReplacement)
+
+	expected := Resource{
+		TemplateData: map[string]interface{}{
+			"image": "<data | jsonPath {.missingPath}>",
+		},
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{},
+		},
+		replacementErrors: []error{
+			fmt.Errorf("jsonPath: missingPath is not found for placeholder data in string image: <data | jsonPath {.missingPath}>"),
+		},
+	}
+
+	assertFailedReplacement(&dummyResource, &expected, t)
+}
+
+func TestGenericReplacement_Modifier_Undefined(t *testing.T) {
+	dummyResource := Resource{
+		TemplateData: map[string]interface{}{
+			"image": "<data | undefinedModifier>",
+		},
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{},
+		},
+		Annotations: map[string]string{
+			(types.AVPPathAnnotation): "",
+		},
+	}
+
+	replaceInner(&dummyResource, &dummyResource.TemplateData, genericReplacement)
+
+	expected := Resource{
+		TemplateData: map[string]interface{}{
+			"image": "<data | undefinedModifier>",
+		},
+		Data: map[string]interface{}{
+			"data": map[string]interface{}{},
+		},
+		replacementErrors: []error{
+			fmt.Errorf("invalid modifier: undefinedModifier for placeholder data in string image: <data | undefinedModifier>"),
+		},
+	}
+
+	assertFailedReplacement(&dummyResource, &expected, t)
 }
 
 func TestGenericReplacement_nestedString(t *testing.T) {
@@ -464,6 +710,35 @@ func TestStringify(t *testing.T) {
 		out := stringify(tc.input)
 		if out != tc.expected {
 			t.Errorf("expected: %s, got: %s.", tc.expected, out)
+		}
+	}
+}
+
+func TestSecretNamespaceName(t *testing.T) {
+	testCases := []struct {
+		input             string
+		expectedNamespace string
+		expectedName      string
+	}{
+		{
+			"secretwithoutnamespace",
+			"argocd",
+			"secretwithoutnamespace",
+		},
+		{
+			"secretnamespace:secretname",
+			"secretnamespace",
+			"secretname",
+		},
+	}
+
+	for _, tc := range testCases {
+		namespace, name := secretNamespaceName(tc.input)
+		if namespace != tc.expectedNamespace {
+			t.Errorf("expected namespace: %s, got: %s.", tc.expectedNamespace, namespace)
+		}
+		if name != tc.expectedName {
+			t.Errorf("expected name: %s, got: %s.", tc.expectedName, name)
 		}
 	}
 }
